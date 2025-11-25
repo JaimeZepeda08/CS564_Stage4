@@ -297,16 +297,77 @@ const Status HeapFileScan::scanNext(RID& outRid)
     int 	nextPageNo;
     Record      rec;
 
-    
-	
-	
-	
-	
-	
-	
-	
-	
-	
+    // loop until we find the matching record or we reach end of all files
+    while (true) {
+        // first time we call scan, so we need get the first page
+        if (curPage == NULL) {
+            // read in first page from file
+            status = bufMgr->readPage(filePtr, headerPage->firstPage, curPage);
+            if (status != OK) {
+                return status;
+            }
+            
+            // get page numebr
+            curPageNo = headerPage->firstPage;
+            curDirtyFlag = false; // page hasnt been changed 
+            
+            // get the first record of this page
+            status = curPage->firstRecord(curRec);
+        }
+        else {
+            // get next record
+            status = curPage->nextRecord(curRec, nextRid);
+        }
+
+        // no records in this page, move to next
+        if (status == OK) {
+            // move to next record
+            if (nextRid.pageNo != curRec.pageNo || nextRid.slotNo != curRec.slotNo) {
+                curRec = nextRid;
+            }
+        }
+        else if (status == NORECORDS) {
+            // reading pinned the page, so we need to unpin it
+            status = bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+            if (status != OK) {
+                return status;
+            }
+
+            // get and read netx page
+            status = curPage->getNextPage(nextPageNo); 
+            if (status != OK || nextPageNo == -1) {
+                return FILEEOF;
+            }
+            
+            status = bufMgr->readPage(filePtr, nextPageNo, curPage);
+            if (status != OK) {
+                return status;
+            }
+            
+            curPageNo = nextPageNo;
+            curDirtyFlag = false;
+            
+            status = curPage->firstRecord(curRec);
+            if (status != OK) {
+                return FILEEOF;
+            }
+        }
+        else {
+            return status;
+        }
+        
+        // get the current record
+        status = curPage->getRecord(curRec, rec);
+        if (status != OK) {
+            return status;
+        }
+        
+        // see if it matches the specified filter
+        if (matchRec(rec)) {
+            outRid = curRec;
+            return OK;
+        }
+    }
 }
 
 
