@@ -313,47 +313,75 @@ const Status HeapFileScan::scanNext(RID& outRid)
             
             // get the first record of this page
             status = curPage->firstRecord(curRec);
+            if (status == NORECORDS) {
+                // if first page is empty, go to the nxet page
+                status = curPage->getNextPage(nextPageNo); 
+                if (status != OK || nextPageNo == -1) { 
+                    return FILEEOF;
+                }
+                
+                // unpin current page 
+                status = bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+                if (status != OK) {
+                    return status;
+                }
+                
+                // read in next page
+                status = bufMgr->readPage(filePtr, nextPageNo, curPage);
+                if (status != OK) {
+                    return status;
+                }
+                
+                curPageNo = nextPageNo;
+                curDirtyFlag = false;
+                
+                status = curPage->firstRecord(curRec);
+                if (status != OK) {
+                    return FILEEOF;
+                }
+            }
+            else if (status != OK) {
+                return status;
+            }
         }
         else {
-            // get next record
+            // get next record on current page
             status = curPage->nextRecord(curRec, nextRid);
-        }
-
-        // no records in this page, move to next
-        if (status == OK) {
-            // move to next record
-            if (nextRid.pageNo != curRec.pageNo || nextRid.slotNo != curRec.slotNo) {
+            
+            if (status == ENDOFPAGE) {
+                // end of current page, go to next
+                status = curPage->getNextPage(nextPageNo); 
+                if (status != OK || nextPageNo == -1) {
+                    return FILEEOF;
+                }
+                
+                // unpin current page since we are not using it anymore
+                status = bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+                if (status != OK) {
+                    return status;
+                }
+                
+                // get next page
+                status = bufMgr->readPage(filePtr, nextPageNo, curPage);
+                if (status != OK) {
+                    return status;
+                }
+                
+                curPageNo = nextPageNo;
+                curDirtyFlag = false;
+                
+                status = curPage->firstRecord(curRec);
+                if (status != OK) {
+                    return FILEEOF;
+                }
+            }
+            else if (status == OK) {
+                // go to nexrt record
                 curRec = nextRid;
             }
-        }
-        else if (status == NORECORDS) {
-            // reading pinned the page, so we need to unpin it
-            status = bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
-            if (status != OK) {
+            else {
                 return status;
             }
-
-            // get and read netx page
-            status = curPage->getNextPage(nextPageNo); 
-            if (status != OK || nextPageNo == -1) {
-                return FILEEOF;
-            }
-            
-            status = bufMgr->readPage(filePtr, nextPageNo, curPage);
-            if (status != OK) {
-                return status;
-            }
-            
-            curPageNo = nextPageNo;
-            curDirtyFlag = false;
-            
-            status = curPage->firstRecord(curRec);
-            if (status != OK) {
-                return FILEEOF;
-            }
-        }
-        else {
-            return status;
         }
         
         // get the current record
@@ -597,5 +625,3 @@ const Status InsertFileScan::insertRecord(const Record & rec, RID& outRid)
 
     return OK;
 }
-
-
