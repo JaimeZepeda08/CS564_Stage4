@@ -459,8 +459,36 @@ const bool HeapFileScan::matchRec(const Record & rec) const
 InsertFileScan::InsertFileScan(const string & name,
                                Status & status) : HeapFile(name, status)
 {
-  //Do nothing. Heapfile constructor will bread the header page and the first
-  // data page of the file into the buffer pool
+    // The HeapFile constructor runs before this. It automatically opens the file and pins the first data page
+    // If HeapFile constructor failed, not continue
+    if (status != OK) return;
+
+    // Insert at the end of the file.
+    // If the currently pinned page (the first page) is NOT the last page, jump directly to the last page to avoid reading unnecessary pages.
+    if ((curPage != NULL) && (curPageNo != headerPage->lastPage))
+    {
+        //A. Unpin the current (first) page because we dont need it
+        status = bufMgr->unPinPage(filePtr, curPageNo, curDirtyFlag);
+        if (status != OK) 
+        {
+            cerr << "InsertFileScan Error: Could not unpin the first data page.\n";
+            return;
+        }
+
+        //B Update our tracker to point to the last page of the file
+        curPageNo = headerPage->lastPage;
+
+        //C Read the last page from the buffer manager. This pins the page so we can start writing to it immediately.
+        status = bufMgr->readPage(filePtr, curPageNo, curPage);
+        if (status != OK) 
+        {
+            cerr << "InsertFileScan Error: Could not read the last data page.\n";
+            return;
+        }
+
+        //D Reset the dirty flag. Just read this page, it hasnt been modified yet.
+        curDirtyFlag = false;
+    }
 }
 
 InsertFileScan::~InsertFileScan()
@@ -477,32 +505,97 @@ InsertFileScan::~InsertFileScan()
 }
 
 // Insert a record into the file
+/*
+ * This function inserts a record into the file.
+ *
+ * It attempts to insert the record into the currently pinned page (the last page).
+ * If that page is full, it allocates a new page, links it to the file, and
+ * inserts the record there.
+ *
+ * Returns:
+ * 1. OK             if successful
+ * 2. INVALIDRECLEN  if the record is too large to fit on a page
+ * 3. NOSPACE        if the new page allocation failed (though unlikely here)
+ * 4. UNIXERR        if a disk I/O error occurred
+ * 5. BUFFEREXCEEDED if all buffer frames are pinned
+ */
 const Status InsertFileScan::insertRecord(const Record & rec, RID& outRid)
 {
-    Page*	newPage;
-    int		newPageNo;
-    Status	status, unpinstatus;
-    RID		rid;
+    Page* newPage;
+    int     newPageNo;
+    Status  status;
 
-    // check for very large records
-    if ((unsigned int) rec.length > PAGESIZE-DPFIXED)
+    // Step 1: Check record size
+    // check if the record is just too big to ever fit on a page. if it's larger than the max data space, we reject it immediately.
+    if ((unsigned int) rec.length > PAGESIZE - DPFIXED)
     {
-        // will never fit on a page, so don't even bother looking
         return INVALIDRECLEN;
     }
 
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
+    // Step 2: Ensure we have the last page pinned
+    // If we don't currently have a page pinned (curPage is NULL), we need to read the last page of the file into the buffer so we can try to add to it.
+    if (curPage == NULL) 
+    {
+        curPageNo = headerPage->lastPage;
+        
+        status = bufMgr->readPage(filePtr, curPageNo, curPage);
+        if (status != OK) return status;
+        
+        // We just read it in, so we haven't modified it yet.
+        curDirtyFlag = false;
+    }
+
+    // Step 3: Try to insert into the current page
+    status = curPage->insertRecord(rec, outRid);
+
+    // Step 4: Handle the case where the page is full
+    if (status == NOSPACE) 
+    {
+        //Page didn't have enough room. Extend the file.
+
+        //A. Allocate a brand new data page.
+        status = bufMgr->allocPage(filePtr, newPageNo, newPage);
+        if (status != OK) return status;
+
+        //B. Initialize the new page info.
+        newPage->init(newPageNo);
+
+        //C. Link the current last page to this new page.
+        status = curPage->setNextPage(newPageNo);
+        if (status != OK) return status;
+
+        //D. Update the File Header to point to this new last page.
+        headerPage->lastPage = newPageNo;
+        headerPage->pageCnt++;
+        hdrDirtyFlag = true; //Modified the header
+
+        //E. Done with the old page now. Unpin it.
+        // Important: We mark it 'true' for dirty because we updated its 'nextPage' pointer.
+        status = bufMgr->unPinPage(filePtr, curPageNo, true);
+        if (status != OK) return status;
+
+        //F. Set bookkeeping variables to point to new page.
+        curPage = newPage;
+        curPageNo = newPageNo;
+        curDirtyFlag = false; // Not dirty yet (until we insert)
+
+        //G. Insert the record into this fresh, empty page.
+        status = curPage->insertRecord(rec, outRid);
+        if (status != OK) return status;
+    }
+    else if (status != OK) 
+    {
+        //If any error other than NOSPACE, report it.
+        return status;
+    }
+
+    // Step 5: Final Bookkeeping
+    // Increment the total record count and mark everything as modified.
+    headerPage->recCnt++;
+    hdrDirtyFlag = true; 
+    curDirtyFlag = true;
+
+    return OK;
 }
 
 
