@@ -3,7 +3,9 @@
 #include <cstring>
 #include <iostream>
 
-// routine to create a heapfile
+/**
+* This function creates a new heap file with the given file name
+*/
 const Status createHeapFile(const string fileName)
 {
     File*       file;
@@ -288,7 +290,10 @@ const Status HeapFileScan::resetScan()
     return OK;
 }
 
-
+/*
+* This function scans the entire heap file for the next record that matches the filter
+* If no record is found, it returns FILEEOF 
+*/
 const Status HeapFileScan::scanNext(RID& outRid)
 {
     Status 	status = OK;
