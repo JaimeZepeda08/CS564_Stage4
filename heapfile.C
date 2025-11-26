@@ -55,8 +55,8 @@ const Status createHeapFile(const string fileName)
             db.closeFile(file);
             return status;
         }
-        // singly-linked list of data pages; no prev field in this API
-        newPage->setNextPage(-1);
+        // initialize the page before using it
+        newPage->init(newPageNo);
 
         hdrPage->firstPage = newPageNo;
         hdrPage->lastPage  = newPageNo;
